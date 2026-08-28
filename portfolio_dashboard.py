@@ -4,18 +4,9 @@ from datetime import date
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 
-APP_VERSION = "2026.08.28.3"
-
-# Published Google Sheet used as the automatic master-data source.
-GOOGLE_SHEET_PUBLISHED_URL = (
-    "https://docs.google.com/spreadsheets/d/e/"
-    "2PACX-1vQviKzUHhu_RyvZdDqu0SavAupMop415okLOSi9fE_gm3GRt2VJIFaujng1tfli9g/"
-    "pubhtml"
-)
-GOOGLE_SHEET_CSV_URL = GOOGLE_SHEET_PUBLISHED_URL.replace(
-    "/pubhtml", "/pub?output=csv"
-)
+APP_VERSION = "2026.08.28.4"
 
 st.set_page_config(
     page_title="Portfolio Command Center",
@@ -35,10 +26,17 @@ def read_excel(file_bytes):
     return pd.read_excel(io.BytesIO(file_bytes), sheet_name="Daily_Portfolio")
 
 
+@st.cache_resource
+def get_google_sheet_connection():
+    """Create the authenticated Google Sheets connection from Streamlit Secrets."""
+    return st.connection("gsheets", type=GSheetsConnection)
+
+
 @st.cache_data(ttl=60)
 def load_google_sheet():
-    """Read the published Google Sheet as CSV; refreshes at most once per minute."""
-    return pd.read_csv(GOOGLE_SHEET_CSV_URL)
+    """Read the private master worksheet through the authenticated service account."""
+    conn = get_google_sheet_connection()
+    return conn.read(worksheet="Daily_Portfolio", ttl=60)
 
 
 @st.cache_data
@@ -114,7 +112,7 @@ if df.empty:
     st.stop()
 
 if store["source"] == "Google Sheet":
-    st.success("Connected: Google Sheet • refresh-safe automatic master source")
+    st.success("Connected: Google Sheet • authenticated automatic master source")
     st.caption("Update the Google Sheet and refresh this app to load the latest data.")
 elif store["source"] == "repository master seed":
     st.info("Google Sheet is unavailable, so the saved repository master snapshot is being used.")
@@ -311,6 +309,6 @@ st.download_button(
 )
 
 st.caption(
-    f"Auto-sync build {APP_VERSION}: Google Sheet is the normal master source. "
+    f"Auto-sync build {APP_VERSION}: Google Sheet is the authenticated master source. "
     "Keep a downloaded master backup after important updates."
 )
