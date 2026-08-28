@@ -5,7 +5,17 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-APP_VERSION = "2026.08.28.2"
+APP_VERSION = "2026.08.28.3"
+
+# Published Google Sheet used as the automatic master-data source.
+GOOGLE_SHEET_PUBLISHED_URL = (
+    "https://docs.google.com/spreadsheets/d/e/"
+    "2PACX-1vQviKzUHhu_RyvZdDqu0SavAupMop415okLOSi9fE_gm3GRt2VJIFaujng1tfli9g/"
+    "pubhtml"
+)
+GOOGLE_SHEET_CSV_URL = GOOGLE_SHEET_PUBLISHED_URL.replace(
+    "/pubhtml", "/pub?output=csv"
+)
 
 st.set_page_config(
     page_title="Portfolio Command Center",
@@ -25,6 +35,12 @@ def read_excel(file_bytes):
     return pd.read_excel(io.BytesIO(file_bytes), sheet_name="Daily_Portfolio")
 
 
+@st.cache_data(ttl=60)
+def load_google_sheet():
+    """Read the published Google Sheet as CSV; refreshes at most once per minute."""
+    return pd.read_csv(GOOGLE_SHEET_CSV_URL)
+
+
 @st.cache_data
 def load_default_master():
     return pd.read_csv("portfolio_master.csv")
@@ -32,7 +48,7 @@ def load_default_master():
 
 @st.cache_resource
 def get_data_store():
-    """Process-level store so a browser refresh keeps the active dataset."""
+    """Process-level store for the active dataset during the running app session."""
     return {"df": None, "filename": None, "source": None}
 
 
@@ -52,46 +68,62 @@ def prepare(df):
 
 
 st.title("📊 Portfolio Command Center")
-st.caption(f"Daily portfolio dashboard • Excel is the master data source • Build {APP_VERSION}")
-
-st.subheader("📁 Master Excel")
-upload = st.file_uploader(
-    "Upload your portfolio Excel", type=["xlsx", "xls"], key="master_excel"
+st.caption(
+    f"Daily portfolio dashboard • Google Sheet is the auto-sync master source • Build {APP_VERSION}"
 )
 
+st.subheader("☁️ Master Data — Google Sheets Auto Sync")
 store = get_data_store()
 
-# A newly uploaded Excel becomes the current master dataset.
-if upload is not None:
-    uploaded_bytes = upload.getvalue()
-    df = prepare(read_excel(uploaded_bytes))
-    store["df"] = df.copy()
-    store["filename"] = upload.name
-    store["source"] = "uploaded Excel"
+# Manual upload remains available as a fallback/override.
+with st.expander("📤 Manual Excel upload (optional)", expanded=False):
+    upload = st.file_uploader(
+        "Upload your portfolio Excel", type=["xlsx", "xls"], key="master_excel"
+    )
 
-# Streamlit reruns the script on browser refresh. The process-level resource
-# store restores the active uploaded data while the app process is alive.
-elif store["df"] is not None:
+    if upload is not None:
+        uploaded_bytes = upload.getvalue()
+        df_uploaded = prepare(read_excel(uploaded_bytes))
+        store["df"] = df_uploaded.copy()
+        store["filename"] = upload.name
+        store["source"] = "uploaded Excel"
+        st.success(f"Loaded manual Excel: {upload.name}")
+
+# Google Sheet is the normal master source unless a manual upload was made
+# in this running session.
+if store["source"] == "uploaded Excel" and store["df"] is not None:
     df = store["df"].copy()
-
-# After a real app restart/redeploy, use the repository master seed safely.
 else:
-    df = prepare(load_default_master())
-    store["df"] = df.copy()
-    store["filename"] = "portfolio_master.csv"
-    store["source"] = "repository master seed"
+    try:
+        df = prepare(load_google_sheet())
+        store["df"] = df.copy()
+        store["filename"] = "Google Sheet (auto-sync)"
+        store["source"] = "Google Sheet"
+    except Exception as exc:
+        st.warning(
+            "Google Sheet could not be read right now. Using the saved repository master instead."
+        )
+        df = prepare(load_default_master())
+        store["df"] = df.copy()
+        store["filename"] = "portfolio_master.csv"
+        store["source"] = "repository master seed"
+        st.caption(f"Auto-sync error: {exc}")
 
 if df.empty:
     st.error("The portfolio master data has no usable dated records.")
     st.stop()
 
-st.success(f"Loaded: {store['filename']}")
-if store["source"] == "repository master seed":
-    st.info("This is the saved repository master snapshot. Upload your latest Excel to replace it.")
-else:
-    st.caption("Uploaded master data is retained during normal page refreshes.")
+if store["source"] == "Google Sheet":
+    st.success("Connected: Google Sheet • refresh-safe automatic master source")
+    st.caption("Update the Google Sheet and refresh this app to load the latest data.")
+elif store["source"] == "repository master seed":
+    st.info("Google Sheet is unavailable, so the saved repository master snapshot is being used.")
 
 with st.expander("➕ Add Today's Update", expanded=False):
+    st.warning(
+        "For a permanent update, add the row to the Google Sheet. "
+        "Updates entered here are kept only for the current running app session."
+    )
     with st.form("daily_update", clear_on_submit=True):
         d = st.date_input("Date", value=date.today())
         asset = st.selectbox(
@@ -120,7 +152,7 @@ with st.expander("➕ Add Today's Update", expanded=False):
         }])
         store["df"] = prepare(pd.concat([store["df"], new], ignore_index=True))
         df = store["df"].copy()
-        st.success("Update added and retained for this running app session.")
+        st.success("Update added for this running app session.")
 
 available = sorted(df["Date"].dt.date.unique())
 selected = st.selectbox(
@@ -279,6 +311,6 @@ st.download_button(
 )
 
 st.caption(
-    f"Refresh-safe build {APP_VERSION}: uploaded data is kept during normal page refreshes. "
-    "Keep the downloaded master backup as your permanent record after important updates."
+    f"Auto-sync build {APP_VERSION}: Google Sheet is the normal master source. "
+    "Keep a downloaded master backup after important updates."
 )
