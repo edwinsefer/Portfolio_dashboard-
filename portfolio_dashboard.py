@@ -6,52 +6,34 @@ import plotly.express as px
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
-APP_VERSION = "2026.08.28.6"
-# Exact Google Sheet ID from the Portfolio Command Center master sheet URL.
-GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1YdlWMJ8mMq4ytZglf53vdMg4r34eklP9/edit"
+APP_VERSION = "2026.08.28.7"
+# Exact spreadsheet URL supplied for the Portfolio Command Center master sheet.
+GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1YdLWMJ8mMq4ytZglf53vdMg4r34eklP9/edit"
 
-st.set_page_config(
-    page_title="Portfolio Command Center",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+st.set_page_config(page_title="Portfolio Command Center", page_icon="📊", layout="wide", initial_sidebar_state="collapsed")
 
-REQUIRED = [
-    "Date", "Asset Class", "Portfolio Value (₹)", "Daily Change %",
-    "Allocation %", "Notes", "Document Link"
-]
-
+REQUIRED = ["Date", "Asset Class", "Portfolio Value (₹)", "Daily Change %", "Allocation %", "Notes", "Document Link"]
 
 @st.cache_data
 def read_excel(file_bytes):
     return pd.read_excel(io.BytesIO(file_bytes), sheet_name="Daily_Portfolio")
 
-
 @st.cache_resource
 def get_google_sheet_connection():
     return st.connection("gsheets", type=GSheetsConnection)
 
-
 @st.cache_data(ttl=60)
 def load_google_sheet():
     conn = get_google_sheet_connection()
-    return conn.read(
-        spreadsheet=GOOGLE_SHEET_URL,
-        worksheet="Daily_Portfolio",
-        ttl=60,
-    )
-
+    return conn.read(spreadsheet=GOOGLE_SHEET_URL, worksheet="Daily_Portfolio", ttl=60)
 
 @st.cache_data
 def load_default_master():
     return pd.read_csv("portfolio_master.csv")
 
-
 @st.cache_resource
 def get_data_store():
     return {"df": None, "filename": None, "source": None}
-
 
 def prepare(df):
     df = df.copy()
@@ -64,7 +46,6 @@ def prepare(df):
     df["Allocation %"] = pd.to_numeric(df["Allocation %"], errors="coerce")
     return df.dropna(subset=["Date"])
 
-
 st.title("📊 Portfolio Command Center")
 st.caption(f"Daily portfolio dashboard • Google Sheet is the auto-sync master source • Build {APP_VERSION}")
 st.subheader("☁️ Master Data — Google Sheets Auto Sync")
@@ -73,9 +54,7 @@ store = get_data_store()
 with st.expander("📤 Manual Excel upload (optional)", expanded=False):
     upload = st.file_uploader("Upload your portfolio Excel", type=["xlsx", "xls"], key="master_excel")
     if upload is not None:
-        uploaded_bytes = upload.getvalue()
-        df_uploaded = prepare(read_excel(uploaded_bytes))
-        store["df"] = df_uploaded.copy()
+        store["df"] = prepare(read_excel(upload.getvalue()))
         store["filename"] = upload.name
         store["source"] = "uploaded Excel"
         st.success(f"Loaded manual Excel: {upload.name}")
