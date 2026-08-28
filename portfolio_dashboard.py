@@ -6,7 +6,8 @@ import plotly.express as px
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
-APP_VERSION = "2026.08.28.4"
+APP_VERSION = "2026.08.28.5"
+GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1YdLWMJ8mMq4ytZglf53vdMg4r34eklP9/edit"
 
 st.set_page_config(
     page_title="Portfolio Command Center",
@@ -36,7 +37,11 @@ def get_google_sheet_connection():
 def load_google_sheet():
     """Read the private master worksheet through the authenticated service account."""
     conn = get_google_sheet_connection()
-    return conn.read(worksheet="Daily_Portfolio", ttl=60)
+    return conn.read(
+        spreadsheet=GOOGLE_SHEET_URL,
+        worksheet="Daily_Portfolio",
+        ttl=60,
+    )
 
 
 @st.cache_data
