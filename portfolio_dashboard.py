@@ -30,7 +30,6 @@ def prepare(df):
 st.title("📊 Portfolio Command Center")
 st.caption("Daily portfolio dashboard • Excel is the master data source")
 
-# Data source — kept in the main page for a better mobile experience.
 st.subheader("📁 Master Excel")
 upload = st.file_uploader("Upload your portfolio Excel", type=["xlsx", "xls"])
 if upload is None:
@@ -44,7 +43,6 @@ if df.empty:
 
 st.success(f"Loaded: {upload.name}")
 
-# Daily update is optional and collapsed so it does not dominate the mobile screen.
 with st.expander("➕ Add Today's Update", expanded=False):
     with st.form("daily_update", clear_on_submit=True):
         d = st.date_input("Date", value=date.today())
@@ -68,10 +66,64 @@ with st.expander("➕ Add Today's Update", expanded=False):
         df = pd.concat([df, new], ignore_index=True)
         st.success("Update added to this dashboard session.")
 
-# Date filter
 available = sorted(df["Date"].dt.date.unique())
 selected = st.selectbox("📅 Dashboard Date", available, index=len(available) - 1)
 view = df[df["Date"].dt.date == selected].copy()
 
-# KPIs
- total_value = view["Portfolio Value (₹)"].sum()
+total_value = view["Portfolio Value (₹)"].sum()
+investment_value = view.loc[~view["Asset Class"].isin(["IND Wallet", "US Wallet"]), "Portfolio Value (₹)"].sum()
+valid = view["Daily Change %"].notna() & (view["Portfolio Value (₹)"] > 0)
+weighted = None
+if valid.any():
+    denom = view.loc[valid, "Portfolio Value (₹)"].sum()
+    if denom:
+        weighted = (view.loc[valid, "Portfolio Value (₹)"] * view.loc[valid, "Daily Change %"]).sum() / denom
+
+c1, c2 = st.columns(2)
+c1.metric("Total Portfolio", f"₹{total_value:,.2f}")
+c2.metric("Investments", f"₹{investment_value:,.2f}")
+c3, c4 = st.columns(2)
+c3.metric("Daily Change", f"{weighted * 100:.2f}%" if weighted is not None else "—")
+c4.metric("Last Updated", pd.Timestamp(selected).strftime("%d %b %Y"))
+
+st.divider()
+
+asset_summary = view.groupby("Asset Class", as_index=False)["Portfolio Value (₹)"].sum().sort_values("Portfolio Value (₹)", ascending=False)
+
+st.subheader("📊 Current Value by Asset")
+fig = px.bar(asset_summary, x="Portfolio Value (₹)", y="Asset Class", orientation="h", text_auto=".2s")
+fig.update_layout(height=420, margin=dict(l=10, r=10, t=20, b=10))
+st.plotly_chart(fig, use_container_width=True, key="asset_value_chart")
+
+st.subheader("🥧 Portfolio Allocation")
+fig = px.pie(asset_summary, names="Asset Class", values="Portfolio Value (₹)", hole=0.48)
+fig.update_layout(height=420, margin=dict(l=10, r=10, t=20, b=10))
+st.plotly_chart(fig, use_container_width=True, key="allocation_chart")
+
+st.subheader("📈 Portfolio Value Trend")
+trend = df.groupby("Date", as_index=False)["Portfolio Value (₹)"].sum().sort_values("Date")
+fig = px.line(trend, x="Date", y="Portfolio Value (₹)", markers=True)
+fig.update_layout(height=420, margin=dict(l=10, r=10, t=20, b=10))
+st.plotly_chart(fig, use_container_width=True, key="trend_chart")
+
+st.subheader("🏆 Performance by Asset")
+table = view[["Asset Class", "Portfolio Value (₹)", "Daily Change %", "Allocation %", "Notes"]].copy()
+table["Daily Change %"] = table["Daily Change %"].map(lambda x: f"{x * 100:.2f}%" if pd.notna(x) else "—")
+table["Allocation %"] = table["Allocation %"].map(lambda x: f"{x:.1f}%" if pd.notna(x) else "—")
+st.dataframe(table, use_container_width=True, hide_index=True)
+
+docs = view[["Asset Class", "Document Link"]].copy()
+docs = docs[docs["Document Link"].notna() & (docs["Document Link"].astype(str).str.strip() != "")]
+if not docs.empty:
+    st.subheader("📎 Supporting Documents")
+    for _, row in docs.iterrows():
+        st.markdown(f"- **{row['Asset Class']}** — {row['Document Link']}")
+
+st.download_button(
+    "⬇️ Export selected date as CSV",
+    view.to_csv(index=False).encode("utf-8"),
+    file_name=f"portfolio_{selected}.csv",
+    mime="text/csv",
+)
+
+st.caption("Excel remains the master record. Upload the latest Excel file to refresh the dashboard.")
