@@ -27,8 +27,8 @@ def prepare(df):
         if c not in df.columns:
             df[c] = ""
 
-    # Keep dates as dates only. This prevents Excel time components from
-    # creating duplicate-looking points/labels on the trend chart.
+    # Use calendar dates only. Excel time components must not create
+    # multiple points/labels for the same day.
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
     df["Portfolio Value (₹)"] = pd.to_numeric(
         df["Portfolio Value (₹)"], errors="coerce"
@@ -154,8 +154,8 @@ st.plotly_chart(fig, use_container_width=True, key="allocation_chart")
 
 st.subheader("📈 Portfolio Value Trend")
 
-# One portfolio value per calendar day. Any time-of-day component is removed
-# before grouping so the chart never creates several points for the same day.
+# One portfolio value per calendar day. This is the key fix for the old
+# duplicate/near-duplicate trend points caused by Excel timestamps.
 trend = (
     df.assign(Calendar_Date=df["Date"].dt.date)
     .groupby("Calendar_Date", as_index=False)["Portfolio Value (₹)"]
@@ -169,15 +169,24 @@ fig = px.line(
     x="Date",
     y="Portfolio Value (₹)",
     markers=True,
-    text=None,
 )
-fig.update_traces(hovertemplate="%{x|%d %b %Y}<br>₹%{y:,.2f}<extra></extra>")
+fig.update_traces(
+    hovertemplate="%{x|%d %b %Y}<br>₹%{y:,.2f}<extra></extra>"
+)
 fig.update_layout(
-    height=420,
-    margin=dict(l=10, r=10, t=20, b=10),
+    height=380,
+    margin=dict(l=10, r=10, t=20, b=55),
     xaxis_title="Date",
     yaxis_title="Portfolio Value (₹)",
-    xaxis=dict(type="date", tickformat="%d %b %Y", tickangle=0),
+    # Mobile-friendly date labels: short labels + angled ticks prevent overlap.
+    xaxis=dict(
+        type="date",
+        tickformat="%d %b",
+        tickangle=-35,
+        tickmode="auto",
+        nticks=min(max(len(trend), 2), 6),
+        automargin=True,
+    ),
     hovermode="x unified",
 )
 st.plotly_chart(fig, use_container_width=True, key="trend_chart")
