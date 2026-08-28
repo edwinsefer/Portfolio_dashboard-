@@ -5,6 +5,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+APP_VERSION = "2026.08.28.2"
+
 st.set_page_config(
     page_title="Portfolio Command Center",
     page_icon="📊",
@@ -23,9 +25,14 @@ def read_excel(file_bytes):
     return pd.read_excel(io.BytesIO(file_bytes), sheet_name="Daily_Portfolio")
 
 
+@st.cache_data
+def load_default_master():
+    return pd.read_csv("portfolio_master.csv")
+
+
 @st.cache_resource
 def get_data_store():
-    """Process-level store so a browser refresh does not discard the loaded data."""
+    """Process-level store so a browser refresh keeps the active dataset."""
     return {"df": None, "filename": None, "source": None}
 
 
@@ -44,13 +51,8 @@ def prepare(df):
     return df.dropna(subset=["Date"])
 
 
-@st.cache_data
-def load_default_master():
-    return pd.read_csv("portfolio_master.csv")
-
-
 st.title("📊 Portfolio Command Center")
-st.caption("Daily portfolio dashboard • Excel is the master data source")
+st.caption(f"Daily portfolio dashboard • Excel is the master data source • Build {APP_VERSION}")
 
 st.subheader("📁 Master Excel")
 upload = st.file_uploader(
@@ -67,12 +69,12 @@ if upload is not None:
     store["filename"] = upload.name
     store["source"] = "uploaded Excel"
 
-# On browser refresh, Streamlit recreates the script but the resource store
-# remains available in the running app process, so the upload is restored.
+# Streamlit reruns the script on browser refresh. The process-level resource
+# store restores the active uploaded data while the app process is alive.
 elif store["df"] is not None:
     df = store["df"].copy()
 
-# Safe fallback after an app restart/redeploy: use the repository master seed.
+# After a real app restart/redeploy, use the repository master seed safely.
 else:
     df = prepare(load_default_master())
     store["df"] = df.copy()
@@ -87,7 +89,7 @@ st.success(f"Loaded: {store['filename']}")
 if store["source"] == "repository master seed":
     st.info("This is the saved repository master snapshot. Upload your latest Excel to replace it.")
 else:
-    st.caption("Your uploaded master data is retained during page refreshes.")
+    st.caption("Uploaded master data is retained during normal page refreshes.")
 
 with st.expander("➕ Add Today's Update", expanded=False):
     with st.form("daily_update", clear_on_submit=True):
@@ -116,9 +118,7 @@ with st.expander("➕ Add Today's Update", expanded=False):
             "Notes": note,
             "Document Link": doc,
         }])
-        df = pd.concat([store["df"], new], ignore_index=True)
-        store["df"] = prepare(df)
-        store["filename"] = store["filename"]
+        store["df"] = prepare(pd.concat([store["df"], new], ignore_index=True))
         df = store["df"].copy()
         st.success("Update added and retained for this running app session.")
 
@@ -177,51 +177,70 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True, key="asset_value_chart")
 
 st.subheader("🥧 Portfolio Allocation")
+
+# Combine tiny wallet/cash slices so the mobile pie remains readable.
+allocation = asset_summary.copy()
+wallet_mask = allocation["Asset Class"].isin(["IND Wallet", "US Wallet"])
+wallet_total = allocation.loc[wallet_mask, "Portfolio Value (₹)"].sum()
+allocation = allocation.loc[~wallet_mask].copy()
+if wallet_total > 0:
+    allocation = pd.concat([
+        allocation,
+        pd.DataFrame([{"Asset Class": "Cash / Wallets", "Portfolio Value (₹)": wallet_total}]),
+    ], ignore_index=True)
+
 fig = px.pie(
-    asset_summary,
+    allocation,
     names="Asset Class",
     values="Portfolio Value (₹)",
     hole=0.48,
 )
+fig.update_traces(textposition="inside", textinfo="percent")
 fig.update_layout(height=420, margin=dict(l=10, r=10, t=20, b=10))
 st.plotly_chart(fig, use_container_width=True, key="allocation_chart")
 
 st.subheader("📈 Portfolio Value Trend")
 
-# Exactly one value per calendar day, avoiding duplicate timestamp points.
+# Exactly one value per calendar day.
 trend = (
     df.assign(Calendar_Date=df["Date"].dt.date)
     .groupby("Calendar_Date", as_index=False)["Portfolio Value (₹)"]
     .sum()
     .sort_values("Calendar_Date")
 )
-trend["Date"] = pd.to_datetime(trend["Calendar_Date"])
 
-fig = px.line(
-    trend,
-    x="Date",
-    y="Portfolio Value (₹)",
-    markers=True,
-)
-fig.update_traces(
-    hovertemplate="%{x|%d %b %Y}<br>₹%{y:,.2f}<extra></extra>"
-)
-fig.update_layout(
-    height=380,
-    margin=dict(l=10, r=10, t=20, b=55),
-    xaxis_title="Date",
-    yaxis_title="Portfolio Value (₹)",
-    xaxis=dict(
-        type="date",
-        tickformat="%d %b",
-        tickangle=-35,
-        tickmode="auto",
-        nticks=min(max(len(trend), 2), 6),
-        automargin=True,
-    ),
-    hovermode="x unified",
-)
-st.plotly_chart(fig, use_container_width=True, key="trend_chart")
+if len(trend) < 2:
+    st.info(
+        "📅 Only one portfolio date is currently available. "
+        "Add the next daily update to start the trend chart."
+    )
+else:
+    trend["Date"] = pd.to_datetime(trend["Calendar_Date"])
+    fig = px.line(
+        trend,
+        x="Date",
+        y="Portfolio Value (₹)",
+        markers=True,
+    )
+    fig.update_traces(
+        hovertemplate="%{x|%d %b %Y}<br>₹%{y:,.2f}<extra></extra>"
+    )
+    fig.update_layout(
+        height=380,
+        margin=dict(l=10, r=10, t=20, b=55),
+        xaxis_title="Date",
+        yaxis_title="Portfolio Value (₹)",
+        xaxis=dict(
+            type="date",
+            tickformat="%d %b",
+            tickangle=-35,
+            tickmode="auto",
+            nticks=min(max(len(trend), 2), 6),
+            automargin=True,
+        ),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, use_container_width=True, key="trend_chart")
 
 st.subheader("🏆 Performance by Asset")
 table = view[
@@ -260,6 +279,6 @@ st.download_button(
 )
 
 st.caption(
-    "Refresh-safe: the loaded Excel is retained while this app process is running. "
-    "Keep your latest Excel as the permanent master record and re-upload it after a deployment/restart."
+    f"Refresh-safe build {APP_VERSION}: uploaded data is kept during normal page refreshes. "
+    "Keep the downloaded master backup as your permanent record after important updates."
 )
