@@ -1,7 +1,9 @@
-import streamlit as st
+import io
+from datetime import date
+
 import pandas as pd
 import plotly.express as px
-from datetime import date
+import streamlit as st
 
 st.set_page_config(
     page_title="Portfolio Command Center",
@@ -15,10 +17,16 @@ REQUIRED = [
     "Allocation %", "Notes", "Document Link"
 ]
 
-@st.cache_data
 
-def read_excel(file):
-    return pd.read_excel(file, sheet_name="Daily_Portfolio")
+@st.cache_data
+def read_excel(file_bytes):
+    return pd.read_excel(io.BytesIO(file_bytes), sheet_name="Daily_Portfolio")
+
+
+@st.cache_resource
+def get_data_store():
+    """Process-level store so a browser refresh does not discard the loaded data."""
+    return {"df": None, "filename": None, "source": None}
 
 
 def prepare(df):
@@ -27,8 +35,6 @@ def prepare(df):
         if c not in df.columns:
             df[c] = ""
 
-    # Use calendar dates only. Excel time components must not create
-    # multiple points/labels for the same day.
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
     df["Portfolio Value (₹)"] = pd.to_numeric(
         df["Portfolio Value (₹)"], errors="coerce"
@@ -36,6 +42,11 @@ def prepare(df):
     df["Daily Change %"] = pd.to_numeric(df["Daily Change %"], errors="coerce")
     df["Allocation %"] = pd.to_numeric(df["Allocation %"], errors="coerce")
     return df.dropna(subset=["Date"])
+
+
+@st.cache_data
+def load_default_master():
+    return pd.read_csv("portfolio_master.csv")
 
 
 st.title("📊 Portfolio Command Center")
@@ -46,16 +57,37 @@ upload = st.file_uploader(
     "Upload your portfolio Excel", type=["xlsx", "xls"], key="master_excel"
 )
 
-if upload is None:
-    st.info("Upload your Portfolio Excel file to start the dashboard.")
-    st.stop()
+store = get_data_store()
 
-df = prepare(read_excel(upload))
+# A newly uploaded Excel becomes the current master dataset.
+if upload is not None:
+    uploaded_bytes = upload.getvalue()
+    df = prepare(read_excel(uploaded_bytes))
+    store["df"] = df.copy()
+    store["filename"] = upload.name
+    store["source"] = "uploaded Excel"
+
+# On browser refresh, Streamlit recreates the script but the resource store
+# remains available in the running app process, so the upload is restored.
+elif store["df"] is not None:
+    df = store["df"].copy()
+
+# Safe fallback after an app restart/redeploy: use the repository master seed.
+else:
+    df = prepare(load_default_master())
+    store["df"] = df.copy()
+    store["filename"] = "portfolio_master.csv"
+    store["source"] = "repository master seed"
+
 if df.empty:
-    st.error("The Daily_Portfolio sheet has no usable dated records.")
+    st.error("The portfolio master data has no usable dated records.")
     st.stop()
 
-st.success(f"Loaded: {upload.name}")
+st.success(f"Loaded: {store['filename']}")
+if store["source"] == "repository master seed":
+    st.info("This is the saved repository master snapshot. Upload your latest Excel to replace it.")
+else:
+    st.caption("Your uploaded master data is retained during page refreshes.")
 
 with st.expander("➕ Add Today's Update", expanded=False):
     with st.form("daily_update", clear_on_submit=True):
@@ -84,8 +116,11 @@ with st.expander("➕ Add Today's Update", expanded=False):
             "Notes": note,
             "Document Link": doc,
         }])
-        df = pd.concat([df, new], ignore_index=True)
-        st.success("Update added to this dashboard session.")
+        df = pd.concat([store["df"], new], ignore_index=True)
+        store["df"] = prepare(df)
+        store["filename"] = store["filename"]
+        df = store["df"].copy()
+        st.success("Update added and retained for this running app session.")
 
 available = sorted(df["Date"].dt.date.unique())
 selected = st.selectbox(
@@ -120,7 +155,6 @@ c4.metric("Last Updated", pd.Timestamp(selected).strftime("%d %b %Y"))
 
 st.divider()
 
-# Aggregate by asset once for the selected date.
 asset_summary = (
     view.groupby("Asset Class", as_index=False)["Portfolio Value (₹)"]
     .sum()
@@ -154,8 +188,7 @@ st.plotly_chart(fig, use_container_width=True, key="allocation_chart")
 
 st.subheader("📈 Portfolio Value Trend")
 
-# One portfolio value per calendar day. This is the key fix for the old
-# duplicate/near-duplicate trend points caused by Excel timestamps.
+# Exactly one value per calendar day, avoiding duplicate timestamp points.
 trend = (
     df.assign(Calendar_Date=df["Date"].dt.date)
     .groupby("Calendar_Date", as_index=False)["Portfolio Value (₹)"]
@@ -178,7 +211,6 @@ fig.update_layout(
     margin=dict(l=10, r=10, t=20, b=55),
     xaxis_title="Date",
     yaxis_title="Portfolio Value (₹)",
-    # Mobile-friendly date labels: short labels + angled ticks prevent overlap.
     xaxis=dict(
         type="date",
         tickformat="%d %b",
@@ -220,4 +252,14 @@ st.download_button(
     mime="text/csv",
 )
 
-st.caption("Excel remains the master record. Upload the latest Excel file to refresh the dashboard.")
+st.download_button(
+    "💾 Download full master data",
+    df.to_csv(index=False).encode("utf-8"),
+    file_name="portfolio_master_backup.csv",
+    mime="text/csv",
+)
+
+st.caption(
+    "Refresh-safe: the loaded Excel is retained while this app process is running. "
+    "Keep your latest Excel as the permanent master record and re-upload it after a deployment/restart."
+)
