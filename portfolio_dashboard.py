@@ -6,7 +6,7 @@ import plotly.express as px
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
-APP_VERSION = "2026.08.28.9"
+APP_VERSION = "2026.08.28.10"
 # Exact spreadsheet URL; the GID identifies the Daily_Portfolio tab.
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1YdLWMJ8mMq4ytZglf53vdMg4r34eklP9/edit#gid=63716434"
 GOOGLE_SHEET_WORKSHEET = "Daily_Portfolio"
@@ -16,8 +16,8 @@ st.set_page_config(page_title="Portfolio Command Center", page_icon="📊", layo
 REQUIRED = ["Date", "Asset Class", "Portfolio Value (₹)", "Daily Change %", "Allocation %", "Notes", "Document Link"]
 
 @st.cache_data
-def read_excel(file_bytes):
-    return pd.read_excel(io.BytesIO(file_bytes), sheet_name="Daily_Portfolio")
+def read_excel(file_bytes, filename):
+    return pd.read_excel(io.BytesIO(file_bytes), sheet_name="Daily_Portfolio", engine="xlrd" if filename.lower().endswith(".xls") else "openpyxl")
 
 @st.cache_resource
 def get_google_sheet_connection():
@@ -55,10 +55,13 @@ store = get_data_store()
 with st.expander("📤 Manual Excel upload (optional)", expanded=False):
     upload = st.file_uploader("Upload your portfolio Excel", type=["xlsx", "xls"], key="master_excel")
     if upload is not None:
-        store["df"] = prepare(read_excel(upload.getvalue()))
-        store["filename"] = upload.name
-        store["source"] = "uploaded Excel"
-        st.success(f"Loaded manual Excel: {upload.name}")
+        try:
+            store["df"] = prepare(read_excel(upload.getvalue(), upload.name))
+            store["filename"] = upload.name
+            store["source"] = "uploaded Excel"
+            st.success(f"Loaded manual Excel: {upload.name}")
+        except Exception as exc:
+            st.error(f"Could not read {upload.name}: {exc}")
 
 if store["source"] == "uploaded Excel" and store["df"] is not None:
     df = store["df"].copy()
