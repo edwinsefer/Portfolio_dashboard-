@@ -6,7 +6,7 @@ import plotly.express as px
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
-APP_VERSION = "2026.08.30.1"
+APP_VERSION = "2026.08.30.2"
 # Exact spreadsheet URL; the GID identifies the Daily_Portfolio tab.
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1YdLWMJ8mMq4ytZglf53vdMg4r34eklP9/edit#gid=63716434"
 GOOGLE_SHEET_WORKSHEET = "Daily_Portfolio"
@@ -32,9 +32,13 @@ def load_google_sheet():
 def load_default_master():
     return pd.read_csv("portfolio_master.csv")
 
-@st.cache_resource
 def get_data_store():
-    return {"df": None, "filename": None, "source": None}
+    # Per-user session state is essential. A cache_resource store is global
+    # across sessions and can make one user's manual entries appear again,
+    # causing stale or apparently duplicated portfolio totals.
+    if "portfolio_data_store" not in st.session_state:
+        st.session_state["portfolio_data_store"] = {"df": None, "filename": None, "source": None}
+    return st.session_state["portfolio_data_store"]
 
 def prepare(df):
     df = df.copy()
@@ -42,13 +46,15 @@ def prepare(df):
         if c not in df.columns:
             df[c] = ""
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
+    df["Asset Class"] = df["Asset Class"].astype(str).str.strip()
     df["Portfolio Value (₹)"] = pd.to_numeric(df["Portfolio Value (₹)"], errors="coerce").fillna(0)
     df["Daily Change %"] = pd.to_numeric(df["Daily Change %"], errors="coerce")
     df["Allocation %"] = pd.to_numeric(df["Allocation %"], errors="coerce")
     df = df.dropna(subset=["Date"])
-    # The portfolio model is one row per asset per date. Remove accidental
-    # duplicate rows so the dashboard never double-counts the same asset.
-    df = df.drop_duplicates(subset=["Date", "Asset Class"], keep="last").reset_index(drop=True)
+    # One row per asset per date. Manual corrections replace the existing
+    # date+asset row instead of creating a second contribution.
+    df["_asset_key"] = df["Asset Class"].str.casefold()
+    df = df.drop_duplicates(subset=["Date", "_asset_key"], keep="last").drop(columns=["_asset_key"]).reset_index(drop=True)
     return df
 
 st.title("📊 Portfolio Command Center")
@@ -104,15 +110,16 @@ with st.expander("➕ Add Today's Update", expanded=False):
         doc = st.text_input("Document Link")
         add = st.form_submit_button("Add Today's Update")
     if add:
-        new = pd.DataFrame([{"Date": pd.Timestamp(d).normalize(), "Asset Class": asset, "Portfolio Value (₹)": value, "Daily Change %": change / 100, "Allocation %": None, "Notes": note, "Document Link": doc}])
+        day = pd.Timestamp(d).normalize()
+        new = pd.DataFrame([{"Date": day, "Asset Class": asset, "Portfolio Value (₹)": value, "Daily Change %": change / 100, "Allocation %": None, "Notes": note, "Document Link": doc}])
         # Replace the same date + asset instead of appending another row.
-        # This prevents a manual correction from being counted twice.
+        # This is the critical duplicate-count protection for manual entries.
         base = store["df"].copy()
-        same_key = (base["Date"] == pd.Timestamp(d).normalize()) & (base["Asset Class"].astype(str) == asset)
+        same_key = (base["Date"] == day) & (base["Asset Class"].astype(str).str.strip().str.casefold() == asset.strip().casefold())
         base = base.loc[~same_key].copy()
         store["df"] = prepare(pd.concat([base, new], ignore_index=True))
         df = store["df"].copy()
-        st.success(f"Updated {asset} for {pd.Timestamp(d).strftime('%d %b %Y')} without double-counting.")
+        st.success(f"Updated {asset} for {day.strftime('%d %b %Y')} without double-counting.")
 
 available = sorted(df["Date"].dt.date.unique())
 selected = st.selectbox("📅 Dashboard Date", available, index=len(available) - 1, key="dashboard_date")
