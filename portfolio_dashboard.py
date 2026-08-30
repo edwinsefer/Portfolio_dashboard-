@@ -6,7 +6,7 @@ import plotly.express as px
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
-APP_VERSION = "2026.08.28.10"
+APP_VERSION = "2026.08.30.1"
 # Exact spreadsheet URL; the GID identifies the Daily_Portfolio tab.
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1YdLWMJ8mMq4ytZglf53vdMg4r34eklP9/edit#gid=63716434"
 GOOGLE_SHEET_WORKSHEET = "Daily_Portfolio"
@@ -45,7 +45,11 @@ def prepare(df):
     df["Portfolio Value (₹)"] = pd.to_numeric(df["Portfolio Value (₹)"], errors="coerce").fillna(0)
     df["Daily Change %"] = pd.to_numeric(df["Daily Change %"], errors="coerce")
     df["Allocation %"] = pd.to_numeric(df["Allocation %"], errors="coerce")
-    return df.dropna(subset=["Date"])
+    df = df.dropna(subset=["Date"])
+    # The portfolio model is one row per asset per date. Remove accidental
+    # duplicate rows so the dashboard never double-counts the same asset.
+    df = df.drop_duplicates(subset=["Date", "Asset Class"], keep="last").reset_index(drop=True)
+    return df
 
 st.title("📊 Portfolio Command Center")
 st.caption(f"Daily portfolio dashboard • Google Sheet is the auto-sync master source • Build {APP_VERSION}")
@@ -90,7 +94,7 @@ elif store["source"] == "repository master seed":
     st.info("Google Sheet is unavailable, so the saved repository master snapshot is being used.")
 
 with st.expander("➕ Add Today's Update", expanded=False):
-    st.warning("For a permanent update, add the row to the Google Sheet. Updates entered here are kept only for the current running app session.")
+    st.warning("For a permanent update, add or edit the row in the Google Sheet. Manual updates here are kept only for the current running app session.")
     with st.form("daily_update", clear_on_submit=True):
         d = st.date_input("Date", value=date.today())
         asset = st.selectbox("Asset Class", ["INDstocks", "US Stocks", "Mutual Funds", "Bonds", "IND Wallet", "US Wallet", "Other"])
@@ -101,9 +105,14 @@ with st.expander("➕ Add Today's Update", expanded=False):
         add = st.form_submit_button("Add Today's Update")
     if add:
         new = pd.DataFrame([{"Date": pd.Timestamp(d).normalize(), "Asset Class": asset, "Portfolio Value (₹)": value, "Daily Change %": change / 100, "Allocation %": None, "Notes": note, "Document Link": doc}])
-        store["df"] = prepare(pd.concat([store["df"], new], ignore_index=True))
+        # Replace the same date + asset instead of appending another row.
+        # This prevents a manual correction from being counted twice.
+        base = store["df"].copy()
+        same_key = (base["Date"] == pd.Timestamp(d).normalize()) & (base["Asset Class"].astype(str) == asset)
+        base = base.loc[~same_key].copy()
+        store["df"] = prepare(pd.concat([base, new], ignore_index=True))
         df = store["df"].copy()
-        st.success("Update added for this running app session.")
+        st.success(f"Updated {asset} for {pd.Timestamp(d).strftime('%d %b %Y')} without double-counting.")
 
 available = sorted(df["Date"].dt.date.unique())
 selected = st.selectbox("📅 Dashboard Date", available, index=len(available) - 1, key="dashboard_date")
