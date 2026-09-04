@@ -4,13 +4,13 @@ from datetime import date
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
 
-APP_VERSION = "2026.09.04.1"
-GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1YdLWMJ8mMq4ytZglf53vdMg4r34eklp9/edit#gid=63716434"
+APP_VERSION = "2026.09.04.2"
+GOOGLE_SHEET_ID = "1YdLWMJ8mMq4ytZglf53vdMg4r34eklp9"
 GOOGLE_SHEET_GID = "63716434"
+GOOGLE_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/edit#gid={GOOGLE_SHEET_GID}"
+GOOGLE_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={GOOGLE_SHEET_GID}"
 GOOGLE_SHEET_WORKSHEET = "Daily_Portfolio"
-CONNECTION_NAME = "gsheets"
 
 st.set_page_config(
     page_title="Portfolio Command Center",
@@ -34,74 +34,20 @@ REQUIRED = [
 def read_excel(file_bytes, filename):
     return pd.read_excel(
         io.BytesIO(file_bytes),
-        sheet_name="Daily_Portfolio",
+        sheet_name=GOOGLE_SHEET_WORKSHEET,
         engine="xlrd" if filename.lower().endswith(".xls") else "openpyxl",
     )
 
 
-@st.cache_resource
-def get_google_sheet_connection():
-    return st.connection(CONNECTION_NAME, type=GSheetsConnection)
-
-
-def has_service_account_config():
-    """Return True when Streamlit secrets contain a GSheets service account."""
-    try:
-        connections = st.secrets.get("connections", {})
-        gsheets = connections.get(CONNECTION_NAME, {})
-        return gsheets.get("type") == "service_account"
-    except Exception:
-        return False
-
-
-def google_worksheet_target():
-    """Public sheets use GID; authenticated sheets use the worksheet name."""
-    return GOOGLE_SHEET_WORKSHEET if has_service_account_config() else GOOGLE_SHEET_GID
-
-
 @st.cache_data(ttl=60)
-def load_google_sheet():
-    conn = get_google_sheet_connection()
-    return conn.read(
-        spreadsheet=GOOGLE_SHEET_URL,
-        worksheet=google_worksheet_target(),
-        ttl=60,
-    )
+def load_google_sheet_public():
+    """Read the Google Sheet through its public CSV export.
 
-
-def write_google_sheet(df):
-    """Persist the complete master DataFrame to Google Sheets.
-
-    The gsheets connector only supports writes in service-account mode. The
-    app deliberately refuses to write when it only has public read access.
+    This deliberately uses no API key, service account, OAuth credential, or
+    Streamlit secret. The Google Sheet must be shared publicly (at least
+    anyone-with-link Viewer) or published to the web.
     """
-    if not has_service_account_config():
-        raise RuntimeError(
-            "Permanent save requires a GSheets service-account connection in "
-            "Streamlit Secrets. Public Google Sheets access is read-only."
-        )
-
-    conn = get_google_sheet_connection()
-    payload = df.copy()
-    for col in REQUIRED:
-        if col not in payload.columns:
-            payload[col] = ""
-    payload = payload[REQUIRED].copy()
-    payload["Date"] = pd.to_datetime(payload["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
-    payload["Portfolio Value (₹)"] = pd.to_numeric(
-        payload["Portfolio Value (₹)"], errors="coerce"
-    ).fillna(0)
-    payload["Daily Change %"] = pd.to_numeric(payload["Daily Change %"], errors="coerce")
-    payload["Allocation %"] = pd.to_numeric(payload["Allocation %"], errors="coerce")
-
-    conn.update(
-        worksheet=GOOGLE_SHEET_WORKSHEET,
-        data=payload,
-    )
-
-    # The next rerun must read the just-written sheet, not a 60-second cache.
-    load_google_sheet.clear()
-    return payload
+    return pd.read_csv(GOOGLE_SHEET_CSV_URL)
 
 
 @st.cache_data
@@ -110,7 +56,6 @@ def load_default_master():
 
 
 def get_data_store():
-    # Session state is per-user. Never use cache_resource for mutable portfolio data.
     if "portfolio_data_store" not in st.session_state:
         st.session_state["portfolio_data_store"] = {
             "df": None,
@@ -135,8 +80,7 @@ def prepare(df):
     df["Allocation %"] = pd.to_numeric(df["Allocation %"], errors="coerce")
     df = df.dropna(subset=["Date"])
 
-    # One row per asset per date. A correction replaces that row instead of
-    # adding another contribution, preventing duplicate portfolio totals.
+    # Exactly one row per Date + Asset Class.
     df["_asset_key"] = df["Asset Class"].str.casefold()
     df = (
         df.drop_duplicates(subset=["Date", "_asset_key"], keep="last")
@@ -148,21 +92,18 @@ def prepare(df):
 
 st.title("📊 Portfolio Command Center")
 st.caption(
-    f"Daily portfolio dashboard • Google Sheet is the auto-sync master source • Build {APP_VERSION}"
+    f"Daily portfolio dashboard • Google Sheet public CSV auto-sync • Build {APP_VERSION}"
 )
 st.subheader("☁️ Master Data — Google Sheets Auto Sync")
 store = get_data_store()
 
 with st.expander("🔎 Connection status", expanded=False):
-    st.write(f"**Spreadsheet ID:** `{GOOGLE_SHEET_URL.split('/d/')[1].split('/')[0]}`")
+    st.write(f"**Spreadsheet ID:** `{GOOGLE_SHEET_ID}`")
     st.write(f"**Worksheet:** `{GOOGLE_SHEET_WORKSHEET}`")
     st.write(f"**Worksheet GID:** `{GOOGLE_SHEET_GID}`")
-    st.write(
-        "**Connection mode:** "
-        + ("Service account (read/write)" if has_service_account_config() else "Public sheet (read-only)")
-    )
+    st.write("**Connection mode:** Public CSV read-only — **No API key / Service Account required**")
     st.caption(
-        "Private credentials are never displayed here. If the sheet is private or permanent writes are required, configure the service-account connection in Streamlit Secrets."
+        "The app reads the public Google Sheet CSV export. Permanent edits are made directly in the Google Sheet, not through the app."
     )
 
 with st.expander("📤 Manual Excel upload (optional)", expanded=False):
@@ -184,71 +125,63 @@ if store["source"] == "uploaded Excel" and store["df"] is not None:
     df = store["df"].copy()
 else:
     try:
-        df = prepare(load_google_sheet())
+        df = prepare(load_google_sheet_public())
         store["df"] = df.copy()
-        store["filename"] = "Google Sheet (auto-sync)"
+        store["filename"] = "Google Sheet (public CSV auto-sync)"
         store["source"] = "Google Sheet"
     except Exception as exc:
         st.warning(
-            "Google Sheet could not be read right now. Using the saved repository master instead."
+            "Google Sheet could not be read. Using the saved repository master instead."
         )
         df = prepare(load_default_master())
         store["df"] = df.copy()
         store["filename"] = "portfolio_master.csv"
         store["source"] = "repository master seed"
-        st.caption(f"Auto-sync error: {type(exc).__name__}: {exc}")
+        st.caption(f"Google Sheet read error: {type(exc).__name__}: {exc}")
 
 if df.empty:
     st.error("The portfolio master data has no usable dated records.")
     st.stop()
 
 if store["source"] == "Google Sheet":
-    if has_service_account_config():
-        st.success("Connected: Google Sheet • authenticated read/write master source")
-        st.caption("Google Sheet is the permanent master. App updates can be saved directly to it.")
-    else:
-        st.success("Connected: Google Sheet • public read-only master source")
-        st.caption(
-            "The sheet is readable, but permanent app-side updates require service-account authentication."
-        )
+    st.success("Connected: Google Sheet • public CSV automatic read-only master source")
+    st.caption(
+        "Permanent updates: edit the Google Sheet directly, then use Refresh Google Sheet now."
+    )
 elif store["source"] == "repository master seed":
-    st.info("Google Sheet is unavailable, so the saved repository master snapshot is being used.")
+    st.info(
+        "Google Sheet is unavailable, so the saved repository master snapshot is being used."
+    )
 
-if st.button("🔄 Refresh Google Sheet now", use_container_width=False):
-    load_google_sheet.clear()
+if st.button("🔄 Refresh Google Sheet now"):
+    load_google_sheet_public.clear()
     st.session_state.pop("portfolio_data_store", None)
     st.session_state.pop("dashboard_date", None)
     st.rerun()
 
 with st.expander("➕ Add Today's Update", expanded=False):
-    if has_service_account_config() and store["source"] == "Google Sheet":
-        st.info("This update will be written permanently to the Google Sheet.")
-    elif has_service_account_config():
-        st.warning(
-            "Google Sheet is currently unavailable. For safety, permanent writing is disabled until the live sheet can be read."
-        )
-    else:
-        st.warning(
-            "This app currently has read-only Google Sheet access. To make an update permanent, configure a Google Sheets service account in Streamlit Secrets."
-        )
-
+    st.warning(
+        "No API key is used. This app is read-only for Google Sheets. For a permanent update, enter the row directly in the Google Sheet. An update entered here is only for the current app session."
+    )
     with st.form("daily_update", clear_on_submit=True):
         d = st.date_input("Date", value=date.today())
         asset = st.selectbox(
             "Asset Class",
-            ["INDstocks", "US Stocks", "Mutual Funds", "Bonds", "IND Wallet", "US Wallet", "Other"],
+            [
+                "INDstocks",
+                "US Stocks",
+                "Mutual Funds",
+                "Bonds",
+                "IND Wallet",
+                "US Wallet",
+                "Other",
+            ],
         )
         value = st.number_input(
-            "Portfolio Value (₹)",
-            min_value=0.0,
-            value=0.0,
-            step=100.0,
+            "Portfolio Value (₹)", min_value=0.0, value=0.0, step=100.0
         )
         change = st.number_input(
-            "Daily Change %",
-            value=0.0,
-            step=0.1,
-            format="%.2f",
+            "Daily Change %", value=0.0, step=0.1, format="%.2f"
         )
         note = st.text_input("Notes")
         doc = st.text_input("Document Link")
@@ -270,52 +203,27 @@ with st.expander("➕ Add Today's Update", expanded=False):
             ]
         )
 
-        # Replace the same date + asset instead of appending a duplicate.
         base = store["df"].copy()
         same_key = (base["Date"] == day) & (
             base["Asset Class"].astype(str).str.strip().str.casefold()
             == asset.strip().casefold()
         )
         base = base.loc[~same_key].copy()
-        updated = prepare(pd.concat([base, new], ignore_index=True))
-
-        if store["source"] == "Google Sheet" and has_service_account_config():
-            try:
-                write_google_sheet(updated)
-                store["df"] = updated.copy()
-                store["filename"] = "Google Sheet (auto-sync)"
-                store["source"] = "Google Sheet"
-                st.session_state["dashboard_date"] = day.date()
-                st.success(
-                    f"Saved {asset} for {day.strftime('%d %b %Y')} to Google Sheets without double-counting."
-                )
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Google Sheet write failed. Nothing was marked as permanently saved: {exc}")
-        else:
-            # Keep the UI useful, but never imply that a public/read-only or
-            # fallback update survived a refresh.
-            store["df"] = updated
-            df = updated.copy()
-            st.session_state["dashboard_date"] = day.date()
-            st.warning(
-                f"Updated {asset} for {day.strftime('%d %b %Y')} in this session only. Permanent saving is not available yet."
-            )
+        store["df"] = prepare(pd.concat([base, new], ignore_index=True))
+        df = store["df"].copy()
+        st.session_state["dashboard_date"] = day.date()
+        st.success(
+            f"Updated {asset} for {day.strftime('%d %b %Y')} in this session without double-counting."
+        )
 
 available = sorted(df["Date"].dt.date.unique())
-
-# When a new daily row was just added, select that date automatically instead
-# of letting an old selectbox key keep the dashboard on yesterday's date.
 if "dashboard_date" in st.session_state and st.session_state["dashboard_date"] in available:
     default_index = available.index(st.session_state["dashboard_date"])
 else:
     default_index = len(available) - 1
 
 selected = st.selectbox(
-    "📅 Dashboard Date",
-    available,
-    index=default_index,
-    key="dashboard_date",
+    "📅 Dashboard Date", available, index=default_index, key="dashboard_date"
 )
 view = df[df["Date"].dt.date == selected].copy()
 total_value = view["Portfolio Value (₹)"].sum()
@@ -399,12 +307,7 @@ if len(trend) < 2:
     )
 else:
     trend["Date"] = pd.to_datetime(trend["Calendar_Date"])
-    fig = px.line(
-        trend,
-        x="Date",
-        y="Portfolio Value (₹)",
-        markers=True,
-    )
+    fig = px.line(trend, x="Date", y="Portfolio Value (₹)", markers=True)
     fig.update_traces(
         hovertemplate="%{x|%d %b %Y}<br>₹%{y:,.2f}<extra></extra>"
     )
@@ -460,5 +363,5 @@ st.download_button(
     mime="text/csv",
 )
 st.caption(
-    f"Auto-sync build {APP_VERSION}: Google Sheet is the master source. Keep a downloaded master backup after important updates."
+    f"Build {APP_VERSION}: Google Sheet public CSV is the master read source. No API key or service account is required."
 )
