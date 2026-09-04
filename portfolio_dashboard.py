@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-APP_VERSION = "2026.09.04.2"
+APP_VERSION = "2026.09.04.3"
 GOOGLE_SHEET_ID = "1YdLWMJ8mMq4ytZglf53vdMg4r34eklp9"
 GOOGLE_SHEET_GID = "63716434"
 GOOGLE_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/edit#gid={GOOGLE_SHEET_GID}"
@@ -65,19 +65,43 @@ def get_data_store():
     return st.session_state["portfolio_data_store"]
 
 
+def clean_money(series):
+    """Convert formatted rupee strings such as '₹108,265.00' to numbers."""
+    return pd.to_numeric(
+        series.astype(str)
+        .str.replace("₹", "", regex=False)
+        .str.replace(",", "", regex=False)
+        .str.replace("INR", "", regex=False)
+        .str.strip(),
+        errors="coerce",
+    )
+
+
 def prepare(df):
     df = df.copy()
     for c in REQUIRED:
         if c not in df.columns:
             df[c] = ""
 
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
+    # The Google Sheet uses one date on the first row of each daily block and
+    # leaves the following asset rows blank. Carry that date down the block.
+    raw_dates = pd.to_datetime(df["Date"], errors="coerce")
+    df["Date"] = raw_dates.ffill().dt.normalize()
     df["Asset Class"] = df["Asset Class"].astype(str).str.strip()
-    df["Portfolio Value (₹)"] = pd.to_numeric(
-        df["Portfolio Value (₹)"], errors="coerce"
-    ).fillna(0)
-    df["Daily Change %"] = pd.to_numeric(df["Daily Change %"], errors="coerce")
-    df["Allocation %"] = pd.to_numeric(df["Allocation %"], errors="coerce")
+
+    # Google Sheets CSV preserves display formatting, including ₹ and commas.
+    # Strip those decorations before numeric conversion.
+    df["Portfolio Value (₹)"] = clean_money(df["Portfolio Value (₹)"]).fillna(0)
+
+    # Daily Change is entered in the sheet as percentage points (e.g. -1.3
+    # means -1.3%). The dashboard stores it as a fraction (e.g. -0.013).
+    df["Daily Change %"] = clean_money(df["Daily Change %"])
+    if df["Daily Change %"].notna().any() and (
+        df["Daily Change %"].abs().max(skipna=True) > 1
+    ):
+        df["Daily Change %"] = df["Daily Change %"] / 100
+
+    df["Allocation %"] = clean_money(df["Allocation %"])
     df = df.dropna(subset=["Date"])
 
     # Exactly one row per Date + Asset Class.
