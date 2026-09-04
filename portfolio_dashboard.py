@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-APP_VERSION = "2026.09.04.3"
+APP_VERSION = "2026.09.04.4"
 GOOGLE_SHEET_ID = "1YdLWMJ8mMq4ytZglf53vdMg4r34eklp9"
 GOOGLE_SHEET_GID = "63716434"
 GOOGLE_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/edit#gid={GOOGLE_SHEET_GID}"
@@ -112,6 +112,27 @@ def prepare(df):
         .reset_index(drop=True)
     )
     return df
+
+
+def calculate_allocation(view):
+    """Calculate allocation from values for investment assets.
+
+    Allocation in the source sheet may be blank or stale. The dashboard
+    calculates it dynamically from the selected day's actual values, matching
+    the original convention where wallets/cash are excluded from investment
+    allocation and the investment asset percentages sum to 100%.
+    """
+    result = view.copy()
+    investment_mask = ~result["Asset Class"].isin(["IND Wallet", "US Wallet"])
+    investment_total = result.loc[investment_mask, "Portfolio Value (₹)"].sum()
+    result["Allocation %"] = None
+    if investment_total > 0:
+        result.loc[investment_mask, "Allocation %"] = (
+            result.loc[investment_mask, "Portfolio Value (₹)"]
+            / investment_total
+            * 100
+        )
+    return result
 
 
 st.title("📊 Portfolio Command Center")
@@ -250,6 +271,7 @@ selected = st.selectbox(
     "📅 Dashboard Date", available, index=default_index, key="dashboard_date"
 )
 view = df[df["Date"].dt.date == selected].copy()
+view = calculate_allocation(view)
 total_value = view["Portfolio Value (₹)"].sum()
 investment_value = view.loc[
     ~view["Asset Class"].isin(["IND Wallet", "US Wallet"]),
